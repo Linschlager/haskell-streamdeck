@@ -11,7 +11,7 @@
         else error "foreach: expected list or attrset"
       );
 
-      pname = "hello-streamdeck";
+      pname = "streamdeck";
       src = inputs.nix-filter.lib {
         root = ./.;
         include = [
@@ -37,7 +37,6 @@
             hp = haskellPackages.override {
               overrides = self: super: with pkgs.haskell.lib; builtins.trace "GHC ${super.ghc.version}" {
                 "${pname}" =  super.callCabal2nix pname src { };
-                streamdeck = doJailbreak (markUnbroken super.streamdeck);
               } // lib.optionalAttrs (lib.versionAtLeast super.ghc.version "9.6") {
                 fourmolu = super.fourmolu_0_14_0_0;
               };

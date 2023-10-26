@@ -205,20 +205,21 @@ ref _ = undefined -- requesting a reference to an unopened Deck is undefined
 sendRaw :: Deck a -> BS.ByteString -> IO ()
 sendRaw deck bs = do
     traceM "sendRaw"
-    if BS.length bs > packetSize then
-        (do
-            traceM "sendRaw 1"
-            let x = BS.take packetSize bs
-            traceM "sendRaw 1/2 done"
-            void $ HID.write (ref deck) x
-            traceM "sendRaw 2/2 done"
-            sendRaw deck $ fixContinuationPacket bs
-        )
-    else
-        (do
-            void $ HID.write (ref deck) bs
-            -- void $ HID.sendFeatureReport (ref deck) (BS.head bs) (BS.tail bs)
-        )
+    if BS.length bs > packetSize
+        then
+            (do
+                traceM "sendRaw 1"
+                let x = BS.take packetSize bs
+                traceM "sendRaw 1/2 done"
+                void $ HID.write (ref deck) x
+                traceM "sendRaw 2/2 done"
+                sendRaw deck $ fixContinuationPacket bs
+            )
+        else
+            (do
+                void $ HID.write (ref deck) bs
+                -- void $ HID.sendFeatureReport (ref deck) (BS.head bs) (BS.tail bs)
+            )
 
 -- In cases where the first byte of a continuation packet is equal to 0, the
 -- byte is discarded entirely, resulting in discoloration.  Continuation packets
