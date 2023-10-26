@@ -10,6 +10,7 @@ module System.Hardware.Streamdeck ( Deck (..)
                                   , Pixel
                                   , enumerate
                                   , open
+                                  , close
                                   , serialNumber, firmware
                                   , sendRaw
                                   , writeImage
@@ -27,6 +28,8 @@ import qualified Data.Word             as DW   (Word16, Word8)
 import qualified System.HIDAPI         as HID
 
 import Prelude
+import Debug.Trace (traceM)
+import Control.Monad (void)
 
 type MiniActiveRow = (Bool, Bool, Bool)
 type SDActiveRow   = (Bool, Bool, Bool, Bool, Bool)
@@ -94,7 +97,7 @@ vendorID = Just 0x0fd9
 enumerate :: IO ConnectedDecks
 enumerate = do
     m <- enum (Just 0x0063)
-    s <- enum (Just 0x0060)
+    s <- enum (Just 0x0080)
     x <- enum (Just 0x006c)
     return $ ConnectedDecks { minis = fmap fm m
                             , decks = fmap fs s
@@ -116,13 +119,13 @@ determineSN info dev = case HID.serialNumber info of
 
 requestSN :: HID.Device -> IO BS.ByteString
 requestSN dev = do
-    sn <- HID.getFeatureReport dev 3 17
-    return $ BS.takeWhile (/= 0) $ BS.drop 5 $ snd sn
+    sn <- HID.getFeatureReport dev 0x06 32
+    return $ BS.takeWhile (/= 0) $ BS.drop 2 $ snd sn
 
 requestFW :: HID.Device -> IO BS.ByteString
 requestFW dev = do
-    fw <- HID.getFeatureReport dev 4 17
-    return $ BS.takeWhile (/= 0) $ BS.drop 5 $ snd fw
+    fw <- HID.getFeatureReport dev 0x05 32
+    return $ BS.takeWhile (/= 0) $ BS.drop 6 $ snd fw
 
 open :: Deck a -> IO (Deck a)
 open (StreamDeckMini' (device, Nothing, _)) =
@@ -139,6 +142,9 @@ open' device f = HID.withHIDAPI $ do
     sn <- determineSN device deck
     fw <- requestFW deck
     return $ f deck sn fw
+
+close :: Deck a -> IO ()
+close = HID.close . ref
 
 serialNumber :: Deck a -> BS.ByteString
 serialNumber (StreamDeckMini' (_, Just ds, _)) = _serialNumber ds
@@ -197,13 +203,22 @@ ref _ = undefined -- requesting a reference to an unopened Deck is undefined
 
 -- Send raw bytes to a Deck, broken up by packets
 sendRaw :: Deck a -> BS.ByteString -> IO ()
-sendRaw deck bs =
+sendRaw deck bs = do
+    traceM "sendRaw"
     if BS.length bs > packetSize then
-        (do _ <- HID.write (ref deck) $ BS.take packetSize bs
-            sendRaw deck $ fixContinuationPacket bs)
+        (do
+            traceM "sendRaw 1"
+            let x = BS.take packetSize bs
+            traceM "sendRaw 1/2 done"
+            void $ HID.write (ref deck) x
+            traceM "sendRaw 2/2 done"
+            sendRaw deck $ fixContinuationPacket bs
+        )
     else
-        (do _ <- HID.write (ref deck) bs
-            return ())
+        (do
+            void $ HID.write (ref deck) bs
+            -- void $ HID.sendFeatureReport (ref deck) (BS.head bs) (BS.tail bs)
+        )
 
 -- In cases where the first byte of a continuation packet is equal to 0, the
 -- byte is discarded entirely, resulting in discoloration.  Continuation packets
@@ -219,19 +234,14 @@ fixContinuationPacket b
                        else BS.cons ((B..|.) 1 byte) (BS.drop 1 rest)
 
 -- Generate a packet to set the Deck's brightness.  Values passed are bracketed
--- to 0 >= x >= 100.  Full brightness is defaulted to otherwise.
+-- to 0 <= x >= 100.  Full brightness is defaulted to otherwise.
 setBrightness :: DW.Word8 -> BS.ByteString
 setBrightness b
     | b <= 100 && b >= 0 = setBrightness' b
     | otherwise = setBrightness' 100
 
 setBrightness' :: DW.Word8 -> BS.ByteString
-setBrightness' b = BS.pack [ 0x05                   -- Report 0x05
-                           , 0x55, 0xAA, 0xD1, 0x01 -- Command (brightness)
-                           ,    b, 0x00, 0x00, 0x00 -- brightness
-                           , 0x00, 0x00, 0x00, 0x00
-                           , 0x00, 0x00, 0x00, 0x00
-                           ]
+setBrightness' b = BS.pack [ 0x03, 0x08, b ]
 
 -- Write a given page of data to a Deck.
 writePage :: Deck a -> Int -> DW.Word8 -> BS.ByteString -> IO ()
@@ -273,17 +283,17 @@ readRaw = HID.read
 --       above pattern - first byte for the first (top-left) button, next for
 --       the button to its right, and so on for a total of 36 bytes.
 readButtonState :: Deck a -> IO ButtonsActive
-readButtonState (StreamDeck' (_, Just ds, _)) =
-    bytesToActiveMap . BS.unpack <$> readRaw (_ref ds) 16
 readButtonState (StreamDeckMini' (_, Just ds, _)) =
     bytesToActiveMap . BS.unpack <$> readRaw (_ref ds) 7
+readButtonState (StreamDeck' (_, Just ds, _)) = do
+    bytesToActiveMap . BS.unpack <$> readRaw (_ref ds) 19
 readButtonState (StreamDeckXL' (_, Just ds, _)) =
     bytesToActiveMap . BS.unpack <$> readRaw (_ref ds) 36
 readButtonState _ = undefined
 
 bytesToActiveMap :: [DW.Word8] -> ButtonsActive
 bytesToActiveMap xs
-    | length xs == 16 = sdMap $   map (== 1) $ drop 1 xs
+    | length xs == 19 = sdMap $   map (== 1) $ drop 4 xs
     | length xs == 7  = miniMap $ map (== 1) $ drop 1 xs
     | length xs == 36 = xlMap $   map (== 1) $ drop 4 xs
     | otherwise = undefined
@@ -332,10 +342,15 @@ drawMiniRow d r (i0, i1, i2) = do
 
 drawSDRow :: Deck 'StreamDeck -> DW.Word8 -> SDRow -> IO ()
 drawSDRow d r (i0, i1, i2, i3, i4) = do
+    traceM "drawRow 1"
     writeImage d (r * 5) i0
+    traceM "drawRow 2"
     writeImage d (r * 5 + 1) i1
+    traceM "drawRow 3"
     writeImage d (r * 5 + 2) i2
+    traceM "drawRow 4"
     writeImage d (r * 5 + 3) i3
+    traceM "drawRow 5"
     writeImage d (r * 5 + 4) i4
 
 drawXLRow :: Deck 'StreamDeckXL -> DW.Word8 -> XLRow -> IO ()
