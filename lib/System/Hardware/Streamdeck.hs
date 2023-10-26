@@ -1,393 +1,138 @@
-{-# LANGUAGE DataKinds         #-}
-{-# LANGUAGE GADTs             #-}
-{-# LANGUAGE KindSignatures    #-}
-{-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE ViewPatterns #-}
+module System.Hardware.Streamdeck where
 
-module System.Hardware.Streamdeck ( Deck (..)
-                                  , Page (..)
-                                  , ConnectedDecks (..)
-                                  , Image
-                                  , Pixel
-                                  , enumerate
-                                  , open
-                                  , close
-                                  , serialNumber, firmware
-                                  , sendRaw
-                                  , writeImage
-                                  , update
-                                  , setBrightness
-                                  , readButtonState
-                                  , solidRGB
-                                  ) where
+import System.HIDAPI qualified as HID
+import Data.ByteString qualified as BS
+import Data.ByteString.Extra qualified as BS
+import Data.Word qualified as DW
+import Data.Functor
+import Data.Ord
+import Data.Bits
+import Control.Monad
+import Data.List ( findIndex )
+import Debug.Trace
 
-import qualified Data.Bits             as B
-import qualified Data.ByteString       as BS
-import qualified Data.ByteString.Char8 as BSC (pack)
-import qualified Data.List.Split       as Split (chunksOf)
-import qualified Data.Word             as DW   (Word16, Word8)
-import qualified System.HIDAPI         as HID
+keyCount :: Num a => a
+keyCount = 15
 
-import Prelude
-import Debug.Trace (traceM)
-import Control.Monad (void)
+imageReportLength :: Num a => a
+imageReportLength = 1024
 
-type MiniActiveRow = (Bool, Bool, Bool)
-type SDActiveRow   = (Bool, Bool, Bool, Bool, Bool)
-type XLActiveRow   = (Bool, Bool, Bool, Bool, Bool, Bool, Bool, Bool)
+imageReportHeaderLength :: Num a => a
+imageReportHeaderLength = 8
 
-type MiniActiveMap = (MiniActiveRow, MiniActiveRow)
-type SDActiveMap   = (SDActiveRow, SDActiveRow, SDActiveRow)
-type XLActiveMap   = (XLActiveRow, XLActiveRow, XLActiveRow, XLActiveRow)
+imageReportPayloadLength :: Num a => a
+imageReportPayloadLength = imageReportLength - imageReportHeaderLength
 
-data ButtonsActive = MiniActive MiniActiveMap
-                   | SDActive SDActiveMap
-                   | XLActive XLActiveMap
-                   deriving (Show, Eq)
-
-type Image  = BS.ByteString
-type PixelR = DW.Word8
-type PixelG = DW.Word8
-type PixelB = DW.Word8
-type Pixel  = (PixelR, PixelG, PixelB)
-
-type MiniRow = (Image, Image, Image)
-type SDRow   = (Image, Image, Image, Image, Image)
-type XLRow   = (Image, Image, Image, Image, Image, Image, Image, Image)
-
-data PageType = MiniPage | SDPage | XLPage
-data Page :: PageType -> * where
-    MiniPage' :: (MiniRow, MiniRow) -> Page 'MiniPage
-    SDPage'   :: (SDRow, SDRow, SDRow) -> Page 'SDPage
-    XLPage'   :: (XLRow, XLRow, XLRow, XLRow) -> Page 'XLPage
-
-data DeckSpec = DeckSpec { _ref          :: HID.Device
-                         , _serialNumber :: BS.ByteString
-                         , _firmware     :: BS.ByteString
-                         }
-
-data DeckType = StreamDeckMini | StreamDeck | StreamDeckXL
-data Deck :: DeckType -> * where
-    StreamDeckMini' :: (HID.DeviceInfo, Maybe DeckSpec, Page 'MiniPage) -> Deck 'StreamDeckMini
-    StreamDeck'     :: (HID.DeviceInfo, Maybe DeckSpec, Page 'SDPage) -> Deck 'StreamDeck
-    StreamDeckXL'   :: (HID.DeviceInfo, Maybe DeckSpec, Page 'XLPage) -> Deck 'StreamDeckXL
-
-data ConnectedDecks = ConnectedDecks { minis :: [Deck 'StreamDeckMini]
-                                     , decks :: [Deck 'StreamDeck]
-                                     , xls   :: [Deck 'StreamDeckXL]
-                                     }
-
--- Example Device Info for an early Stream Deck:
--- DeviceInfo { path = "/dev/hidraw%d"
---            , vendorId = 4057
---            , produc tId = 96
---            , serialNumber = Just ""
---            , releaseNumber = 256
---            , manufacturerString = Just "Elgato Systems"
---            , productString = Just "Stream Deck"
---            , usagePage = 13410
---            , usage = 13359
---            , interfaceNumber = 0
---            }
+-- 72 x 72 black JPEG
+blankKeyImage :: BS.ByteString
+blankKeyImage = BS.pack [
+    0xff, 0xd8, 0xff, 0xe0, 0x00, 0x10, 0x4a, 0x46, 0x49, 0x46, 0x00, 0x01, 0x01, 0x00, 0x00, 0x01, 0x00, 0x01, 0x00,
+    0x00, 0xff, 0xdb, 0x00, 0x43, 0x00, 0x08, 0x06, 0x06, 0x07, 0x06, 0x05, 0x08, 0x07, 0x07, 0x07, 0x09, 0x09, 0x08,
+    0x0a, 0x0c, 0x14, 0x0d, 0x0c, 0x0b, 0x0b, 0x0c, 0x19, 0x12, 0x13, 0x0f, 0x14, 0x1d, 0x1a, 0x1f, 0x1e, 0x1d, 0x1a,
+    0x1c, 0x1c, 0x20, 0x24, 0x2e, 0x27, 0x20, 0x22, 0x2c, 0x23, 0x1c, 0x1c, 0x28, 0x37, 0x29, 0x2c, 0x30, 0x31, 0x34,
+    0x34, 0x34, 0x1f, 0x27, 0x39, 0x3d, 0x38, 0x32, 0x3c, 0x2e, 0x33, 0x34, 0x32, 0xff, 0xdb, 0x00, 0x43, 0x01, 0x09,
+    0x09, 0x09, 0x0c, 0x0b, 0x0c, 0x18, 0x0d, 0x0d, 0x18, 0x32, 0x21, 0x1c, 0x21, 0x32, 0x32, 0x32, 0x32, 0x32, 0x32,
+    0x32, 0x32, 0x32, 0x32, 0x32, 0x32, 0x32, 0x32, 0x32, 0x32, 0x32, 0x32, 0x32, 0x32, 0x32, 0x32, 0x32, 0x32, 0x32,
+    0x32, 0x32, 0x32, 0x32, 0x32, 0x32, 0x32, 0x32, 0x32, 0x32, 0x32, 0x32, 0x32, 0x32, 0x32, 0x32, 0x32, 0x32, 0x32,
+    0x32, 0x32, 0x32, 0x32, 0x32, 0x32, 0xff, 0xc0, 0x00, 0x11, 0x08, 0x00, 0x48, 0x00, 0x48, 0x03, 0x01, 0x22, 0x00,
+    0x02, 0x11, 0x01, 0x03, 0x11, 0x01, 0xff, 0xc4, 0x00, 0x1f, 0x00, 0x00, 0x01, 0x05, 0x01, 0x01, 0x01, 0x01, 0x01,
+    0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0a,
+    0x0b, 0xff, 0xc4, 0x00, 0xb5, 0x10, 0x00, 0x02, 0x01, 0x03, 0x03, 0x02, 0x04, 0x03, 0x05, 0x05, 0x04, 0x04, 0x00,
+    0x00, 0x01, 0x7d, 0x01, 0x02, 0x03, 0x00, 0x04, 0x11, 0x05, 0x12, 0x21, 0x31, 0x41, 0x06, 0x13, 0x51, 0x61, 0x07,
+    0x22, 0x71, 0x14, 0x32, 0x81, 0x91, 0xa1, 0x08, 0x23, 0x42, 0xb1, 0xc1, 0x15, 0x52, 0xd1, 0xf0, 0x24, 0x33, 0x62,
+    0x72, 0x82, 0x09, 0x0a, 0x16, 0x17, 0x18, 0x19, 0x1a, 0x25, 0x26, 0x27, 0x28, 0x29, 0x2a, 0x34, 0x35, 0x36, 0x37,
+    0x38, 0x39, 0x3a, 0x43, 0x44, 0x45, 0x46, 0x47, 0x48, 0x49, 0x4a, 0x53, 0x54, 0x55, 0x56, 0x57, 0x58, 0x59, 0x5a,
+    0x63, 0x64, 0x65, 0x66, 0x67, 0x68, 0x69, 0x6a, 0x73, 0x74, 0x75, 0x76, 0x77, 0x78, 0x79, 0x7a, 0x83, 0x84, 0x85,
+    0x86, 0x87, 0x88, 0x89, 0x8a, 0x92, 0x93, 0x94, 0x95, 0x96, 0x97, 0x98, 0x99, 0x9a, 0xa2, 0xa3, 0xa4, 0xa5, 0xa6,
+    0xa7, 0xa8, 0xa9, 0xaa, 0xb2, 0xb3, 0xb4, 0xb5, 0xb6, 0xb7, 0xb8, 0xb9, 0xba, 0xc2, 0xc3, 0xc4, 0xc5, 0xc6, 0xc7,
+    0xc8, 0xc9, 0xca, 0xd2, 0xd3, 0xd4, 0xd5, 0xd6, 0xd7, 0xd8, 0xd9, 0xda, 0xe1, 0xe2, 0xe3, 0xe4, 0xe5, 0xe6, 0xe7,
+    0xe8, 0xe9, 0xea, 0xf1, 0xf2, 0xf3, 0xf4, 0xf5, 0xf6, 0xf7, 0xf8, 0xf9, 0xfa, 0xff, 0xc4, 0x00, 0x1f, 0x01, 0x00,
+    0x03, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0x02, 0x03,
+    0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0a, 0x0b, 0xff, 0xc4, 0x00, 0xb5, 0x11, 0x00, 0x02, 0x01, 0x02, 0x04, 0x04,
+    0x03, 0x04, 0x07, 0x05, 0x04, 0x04, 0x00, 0x01, 0x02, 0x77, 0x00, 0x01, 0x02, 0x03, 0x11, 0x04, 0x05, 0x21, 0x31,
+    0x06, 0x12, 0x41, 0x51, 0x07, 0x61, 0x71, 0x13, 0x22, 0x32, 0x81, 0x08, 0x14, 0x42, 0x91, 0xa1, 0xb1, 0xc1, 0x09,
+    0x23, 0x33, 0x52, 0xf0, 0x15, 0x62, 0x72, 0xd1, 0x0a, 0x16, 0x24, 0x34, 0xe1, 0x25, 0xf1, 0x17, 0x18, 0x19, 0x1a,
+    0x26, 0x27, 0x28, 0x29, 0x2a, 0x35, 0x36, 0x37, 0x38, 0x39, 0x3a, 0x43, 0x44, 0x45, 0x46, 0x47, 0x48, 0x49, 0x4a,
+    0x53, 0x54, 0x55, 0x56, 0x57, 0x58, 0x59, 0x5a, 0x63, 0x64, 0x65, 0x66, 0x67, 0x68, 0x69, 0x6a, 0x73, 0x74, 0x75,
+    0x76, 0x77, 0x78, 0x79, 0x7a, 0x82, 0x83, 0x84, 0x85, 0x86, 0x87, 0x88, 0x89, 0x8a, 0x92, 0x93, 0x94, 0x95, 0x96,
+    0x97, 0x98, 0x99, 0x9a, 0xa2, 0xa3, 0xa4, 0xa5, 0xa6, 0xa7, 0xa8, 0xa9, 0xaa, 0xb2, 0xb3, 0xb4, 0xb5, 0xb6, 0xb7,
+    0xb8, 0xb9, 0xba, 0xc2, 0xc3, 0xc4, 0xc5, 0xc6, 0xc7, 0xc8, 0xc9, 0xca, 0xd2, 0xd3, 0xd4, 0xd5, 0xd6, 0xd7, 0xd8,
+    0xd9, 0xda, 0xe2, 0xe3, 0xe4, 0xe5, 0xe6, 0xe7, 0xe8, 0xe9, 0xea, 0xf2, 0xf3, 0xf4, 0xf5, 0xf6, 0xf7, 0xf8, 0xf9,
+    0xfa, 0xff, 0xda, 0x00, 0x0c, 0x03, 0x01, 0x00, 0x02, 0x11, 0x03, 0x11, 0x00, 0x3f, 0x00, 0xf9, 0xfe, 0x8a, 0x28,
+    0xa0, 0x02, 0x8a, 0x28, 0xa0, 0x02, 0x8a, 0x28, 0xa0, 0x02, 0x8a, 0x28, 0xa0, 0x02, 0x8a, 0x28, 0xa0, 0x02, 0x8a,
+    0x28, 0xa0, 0x02, 0x8a, 0x28, 0xa0, 0x02, 0x8a, 0x28, 0xa0, 0x02, 0x8a, 0x28, 0xa0, 0x02, 0x8a, 0x28, 0xa0, 0x02,
+    0x8a, 0x28, 0xa0, 0x02, 0x8a, 0x28, 0xa0, 0x02, 0x8a, 0x28, 0xa0, 0x02, 0x8a, 0x28, 0xa0, 0x02, 0x8a, 0x28, 0xa0,
+    0x02, 0x8a, 0x28, 0xa0, 0x02, 0x8a, 0x28, 0xa0, 0x02, 0x8a, 0x28, 0xa0, 0x02, 0x8a, 0x28, 0xa0, 0x02, 0x8a, 0x28,
+    0xa0, 0x02, 0x8a, 0x28, 0xa0, 0x02, 0x8a, 0x28, 0xa0, 0x02, 0x8a, 0x28, 0xa0, 0x02, 0x8a, 0x28, 0xa0, 0x02, 0x8a,
+    0x28, 0xa0, 0x0f, 0xff, 0xd9
+    ]
 
 -- Constant across all Elgato hardware
-vendorID :: Maybe DW.Word16
-vendorID = Just 0x0fd9
+vendorID :: DW.Word16
+vendorID = 0x0fd9
 
--- Enumerate Stream Decks, differentiating by type
-enumerate :: IO ConnectedDecks
-enumerate = do
-    m <- enum (Just 0x0063)
-    s <- enum (Just 0x0080)
-    x <- enum (Just 0x006c)
-    return $ ConnectedDecks { minis = fmap fm m
-                            , decks = fmap fs s
-                            , xls   = fmap fx x
-                            }
-        where enum = HID.enumerate vendorID
-              fm di = StreamDeckMini' (di, Nothing, emptyMiniPage)
-              fs di = StreamDeck' (di, Nothing, emptySDPage)
-              fx di = StreamDeckXL' (di, Nothing, emptyXLPage)
+enumerate :: IO [HID.DeviceInfo]
+enumerate = HID.enumerate (Just vendorID) (Just 0x0080)
 
--- Note: older firmware Stream Decks have a bug where "" is reported as the
--- Serial number unless a feature report requesting the Serial Number is issued.
--- Newer Stream Decks do not require this step.
-determineSN :: HID.DeviceInfo -> HID.Device -> IO BS.ByteString
-determineSN info dev = case HID.serialNumber info of
-    Nothing -> requestSN dev
-    Just "" -> requestSN dev
-    Just sn -> return $ BSC.pack $ show sn
+withDevice :: HID.DeviceInfo -> (HID.Device -> IO ()) -> IO ()
+withDevice deviceInfo = HID.withHIDAPI . (HID.openDeviceInfo deviceInfo >>=)
 
-requestSN :: HID.Device -> IO BS.ByteString
-requestSN dev = do
-    sn <- HID.getFeatureReport dev 0x06 32
-    return $ BS.takeWhile (/= 0) $ BS.drop 2 $ snd sn
+readKeyStates :: HID.Device -> IO [Bool]
+readKeyStates deck = do
+    states <- HID.read deck (4 + keyCount)
+    let buttons = BS.drop 4 states
+    pure $ (0/=) <$> BS.unpack buttons
 
-requestFW :: HID.Device -> IO BS.ByteString
-requestFW dev = do
-    fw <- HID.getFeatureReport dev 0x05 32
-    return $ BS.takeWhile (/= 0) $ BS.drop 6 $ snd fw
+readActiveKey :: HID.Device -> IO (Maybe Int)
+readActiveKey deck = do
+    findIndex id <$> readKeyStates deck
 
-open :: Deck a -> IO (Deck a)
-open (StreamDeckMini' (device, Nothing, _)) =
-    open' device (\deck sn fw -> StreamDeckMini' (device, Just $ DeckSpec { _ref = deck, _serialNumber = sn, _firmware = fw }, emptyMiniPage) )
-open (StreamDeck' (device, Nothing, _)) =
-    open' device (\deck sn fw -> StreamDeck' (device, Just $ DeckSpec { _ref = deck, _serialNumber = sn, _firmware = fw }, emptySDPage) )
-open (StreamDeckXL' (device, Nothing, _)) =
-    open' device (\deck sn fw -> StreamDeckXL' (device, Just $ DeckSpec { _ref = deck, _serialNumber = sn, _firmware = fw }, emptyXLPage) )
-open _ = undefined -- Opening an already-opened Stream Deck is undefined
+resetKeyStream :: HID.Device -> IO ()
+resetKeyStream deck = do
+    let payload = BS.pack $ 0x02 : replicate (imageReportLength-1) 0
+    void $ HID.write deck payload
 
-open' :: HID.DeviceInfo -> (HID.Device -> BS.ByteString -> BS.ByteString -> Deck a) -> IO (Deck a)
-open' device f = HID.withHIDAPI $ do
-    deck <- HID.openDeviceInfo device
-    sn <- determineSN device deck
-    fw <- requestFW deck
-    return $ f deck sn fw
+reset :: HID.Device -> IO ()
+reset deck = do
+    let payload = BS.pack $ 0x02 : replicate 30 0
+    void $ HID.sendFeatureReport deck 0x03 payload
 
-close :: Deck a -> IO ()
-close = HID.close . ref
+setBrightness :: DW.Word8 -> HID.Device -> IO ()
+setBrightness (clamp (0, 100) -> percent) deck = do
+    let payload = BS.pack [0x08, percent]
+    void $ HID.sendFeatureReport deck 0x03 payload
 
-serialNumber :: Deck a -> BS.ByteString
-serialNumber (StreamDeckMini' (_, Just ds, _)) = _serialNumber ds
-serialNumber (StreamDeck' (_, Just ds, _)) = _serialNumber ds
-serialNumber (StreamDeckXL' (_, Just ds, _)) = _serialNumber ds
-serialNumber _ = undefined
+getSerialNumber :: HID.Device -> IO BS.ByteString
+getSerialNumber deck = do
+    (_reportId, serialNumber) <- HID.getFeatureReport deck 0x06 32
+    pure $ BS.drop 2 serialNumber
 
-firmware :: Deck a -> BS.ByteString
-firmware (StreamDeckMini' (_, Just ds, _)) = _firmware ds
-firmware (StreamDeck' (_, Just ds, _)) = _firmware ds
-firmware (StreamDeckXL' (_, Just ds, _)) = _firmware ds
-firmware _ = undefined
+getFirmwareVersion :: HID.Device -> IO BS.ByteString
+getFirmwareVersion deck = do
+    (_reportId, serialNumber) <- HID.getFeatureReport deck 0x05 32
+    pure $ BS.drop 6 serialNumber
 
--- Constants useful in communicating with Stream Decks
-packetSize :: Int
-packetSize = 4096
-
-page1Pixels :: Int
-page1Pixels = 2583
-
-page2Pixels :: Int
-page2Pixels = 2601
-
-buttonPixels :: Int
-buttonPixels = page1Pixels + page2Pixels
-
-solidRGB :: PixelR -> PixelG -> PixelB -> Image
-solidRGB r g b = BS.pack $ take (3 * (buttonPixels - 1)) $ cycle [b, g, r]
-
-emptyMiniRow :: MiniRow
-emptyMiniRow = (b, b, b)
-    where b = solidRGB 0 0 0
-emptySDRow :: SDRow
-emptySDRow =  (b, b, b, b, b)
-    where b = solidRGB 0 0 0
-emptyXLRow :: XLRow
-emptyXLRow = (b, b, b, b, b, b, b, b)
-    where b = solidRGB 0 0 0
-
-emptyMiniPage :: Page 'MiniPage
-emptyMiniPage = MiniPage' (r, r)
-    where r = emptyMiniRow
-emptySDPage :: Page 'SDPage
-emptySDPage = SDPage' (r, r, r)
-    where r = emptySDRow
-emptyXLPage :: Page 'XLPage
-emptyXLPage = XLPage' (r, r, r, r)
-    where r = emptyXLRow
-
--- Helper method to return the device for a given Deck
-ref :: Deck a -> HID.Device
-ref (StreamDeckMini' (_, Just spec, _)) = _ref spec
-ref (StreamDeck' (_, Just spec, _)) = _ref spec
-ref (StreamDeckXL' (_, Just spec, _)) = _ref spec
-ref _ = undefined -- requesting a reference to an unopened Deck is undefined
-
--- Send raw bytes to a Deck, broken up by packets
-sendRaw :: Deck a -> BS.ByteString -> IO ()
-sendRaw deck bs = do
-    traceM "sendRaw"
-    if BS.length bs > packetSize
-        then
-            (do
-                traceM "sendRaw 1"
-                let x = BS.take packetSize bs
-                traceM "sendRaw 1/2 done"
-                void $ HID.write (ref deck) x
-                traceM "sendRaw 2/2 done"
-                sendRaw deck $ fixContinuationPacket bs
-            )
-        else
-            (do
-                void $ HID.write (ref deck) bs
-                -- void $ HID.sendFeatureReport (ref deck) (BS.head bs) (BS.tail bs)
-            )
-
--- In cases where the first byte of a continuation packet is equal to 0, the
--- byte is discarded entirely, resulting in discoloration.  Continuation packets
--- only get used in cases where data > 4096 bytes is being sent, so in practice
--- this is only a concern for sending image data.
-fixContinuationPacket :: BS.ByteString -> BS.ByteString
-fixContinuationPacket b
-    | BS.length b < packetSize = BS.pack []
-    | otherwise =
-        let rest = BS.drop packetSize b
-            byte = BS.head rest
-        in if byte > 0 then rest
-                       else BS.cons ((B..|.) 1 byte) (BS.drop 1 rest)
-
--- Generate a packet to set the Deck's brightness.  Values passed are bracketed
--- to 0 <= x >= 100.  Full brightness is defaulted to otherwise.
-setBrightness :: DW.Word8 -> BS.ByteString
-setBrightness b
-    | b <= 100 && b >= 0 = setBrightness' b
-    | otherwise = setBrightness' 100
-
-setBrightness' :: DW.Word8 -> BS.ByteString
-setBrightness' b = BS.pack [ 0x03, 0x08, b ]
-
--- Write a given page of data to a Deck.
-writePage :: Deck a -> Int -> DW.Word8 -> BS.ByteString -> IO ()
-writePage deck p i bs = sendRaw deck $ BS.append (page p i) bs
-
--- Generate a given page of data to be sent to a Deck.  The first page of a
--- command (for commands requiring 2 pages - typically sending image data) has
--- a longer prologue than the second page.  No commands with more than 2 pages
--- exist.
-page :: Int -> DW.Word8 -> BS.ByteString
-page 1 i = BS.pack [ 0x02, 0x01, 0x01, 0x00, 0x00,  i+1, 0x00, 0x00
-                   , 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00
-                   , 0x42, 0x4d, 0xf6, 0x3c, 0x00, 0x00, 0x00, 0x00
-                   , 0x00, 0x00, 0x36, 0x00, 0x00, 0x00, 0x28, 0x00
-                   , 0x00, 0x00, 0x48, 0x00, 0x00, 0x00, 0x48, 0x00
-                   , 0x00, 0x00, 0x01, 0x00, 0x18, 0x00, 0x00, 0x00
-                   , 0x00, 0x00, 0xc0, 0x3c, 0x00, 0x00, 0xc4, 0x0e
-                   , 0x00, 0x00, 0xc4, 0x0e, 0x00, 0x00, 0x00, 0x00
-                   , 0x00, 0x00, 0x00, 0x00, 0x00, 0x00]
-
-page 2 i = BS.pack [ 0x02, 0x01, 0x02, 0x00, 0x01,  i+1, 0x00, 0x00
-                   , 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00]
-
-page _ _ = BS.pack []
-
--- Helper: read data from a given Deck
-readRaw :: HID.Device -> Int -> IO BS.ByteString
-readRaw = HID.read
-
--- Stream Deck reports button state ONLY upon button press/release
--- Stream Deck will send a 16 byte message, with the following format:
--- 01 AA BB CC DD EE FF GG HH II JJ KK LL MM NN OO
--- * Byte 0 being set to 0x01 is static, indicating a "button event" message.
--- * AA-OO are 1 byte, if the low bit is set, the button is pressed.  Bits 1-7
---   appear to be unused.
--- Note: The Stream Deck Mini will not send data beyond the 8th byte
--- Note: The Stream Deck XL's format is slightly different.  The Stream Deck XL
---       sends a prelude of 01 00 20 00, followed by 32 bytes, following the
---       above pattern - first byte for the first (top-left) button, next for
---       the button to its right, and so on for a total of 36 bytes.
-readButtonState :: Deck a -> IO ButtonsActive
-readButtonState (StreamDeckMini' (_, Just ds, _)) =
-    bytesToActiveMap . BS.unpack <$> readRaw (_ref ds) 7
-readButtonState (StreamDeck' (_, Just ds, _)) = do
-    bytesToActiveMap . BS.unpack <$> readRaw (_ref ds) 19
-readButtonState (StreamDeckXL' (_, Just ds, _)) =
-    bytesToActiveMap . BS.unpack <$> readRaw (_ref ds) 36
-readButtonState _ = undefined
-
-bytesToActiveMap :: [DW.Word8] -> ButtonsActive
-bytesToActiveMap xs
-    | length xs == 19 = sdMap $   map (== 1) $ drop 4 xs
-    | length xs == 7  = miniMap $ map (== 1) $ drop 1 xs
-    | length xs == 36 = xlMap $   map (== 1) $ drop 4 xs
-    | otherwise = undefined
-
-sdMap :: [Bool] -> ButtonsActive
-sdMap bs = SDActive $ sdam $ sdar <$> Split.chunksOf 5 bs
-    where
-        sdar :: [Bool] -> SDActiveRow
-        sdar [a, b, c, d, e] = (a,b,c,d,e)
-        sdar _ = undefined
-        sdam :: [SDActiveRow] -> SDActiveMap
-        sdam [a, b, c] = (a,b,c)
-        sdam _ = undefined
-
-miniMap :: [Bool] -> ButtonsActive
-miniMap bs = MiniActive $ miniam $ miniar <$> Split.chunksOf 3 bs
-    where
-        miniar :: [Bool] -> MiniActiveRow
-        miniar [a, b, c] = (a,b,c)
-        miniar _ = undefined
-        miniam :: [MiniActiveRow] -> MiniActiveMap
-        miniam [a, b] = (a,b)
-        miniam _ = undefined
-
-xlMap :: [Bool] -> ButtonsActive
-xlMap bs = XLActive $ xlam $ xlar <$> Split.chunksOf 8 bs
-    where
-        xlar :: [Bool] -> XLActiveRow
-        xlar [a, b, c, d, e, f, g, h] = (a,b,c,d,e,f,g,h)
-        xlar _ = undefined
-        xlam :: [XLActiveRow] -> XLActiveMap
-        xlam [a, b, c, d] = (a,b,c,d)
-        xlam _ = undefined
-
-writeImage :: Deck a -> DW.Word8 -> Image -> IO ()
-writeImage deck button img =
-    let page1 = BS.take (3 * page1Pixels) img
-        page2 = BS.take (3 * page2Pixels) $ BS.drop (3 * page1Pixels) img
-    in writePage deck 1 button page1 >> writePage deck 2 button page2
-
-drawMiniRow :: Deck 'StreamDeckMini -> DW.Word8 -> MiniRow -> IO ()
-drawMiniRow d r (i0, i1, i2) = do
-    writeImage d (r * 3) i0
-    writeImage d (r * 3 + 1) i1
-    writeImage d (r * 3 + 2) i2
-
-drawSDRow :: Deck 'StreamDeck -> DW.Word8 -> SDRow -> IO ()
-drawSDRow d r (i0, i1, i2, i3, i4) = do
-    traceM "drawRow 1"
-    writeImage d (r * 5) i0
-    traceM "drawRow 2"
-    writeImage d (r * 5 + 1) i1
-    traceM "drawRow 3"
-    writeImage d (r * 5 + 2) i2
-    traceM "drawRow 4"
-    writeImage d (r * 5 + 3) i3
-    traceM "drawRow 5"
-    writeImage d (r * 5 + 4) i4
-
-drawXLRow :: Deck 'StreamDeckXL -> DW.Word8 -> XLRow -> IO ()
-drawXLRow d r (i0, i1, i2, i3, i4, i5, i6, i7) = do
-    writeImage d (r * 8) i0
-    writeImage d (r * 8 + 1) i1
-    writeImage d (r * 8 + 2) i2
-    writeImage d (r * 8 + 3) i3
-    writeImage d (r * 8 + 4) i4
-    writeImage d (r * 8 + 5) i5
-    writeImage d (r * 8 + 6) i6
-    writeImage d (r * 8 + 7) i7
-
-render :: Deck a -> IO ()
-render (StreamDeckMini' (dev, Just ds, display)) = drawRow d 0 r0 >> drawRow d 1 r1
-  where MiniPage' (r0, r1) = display
-        drawRow = drawMiniRow
-        d = StreamDeckMini' (dev, Just ds, display)
-render (StreamDeck' (dev, Just ds, display)) = drawRow d 0 r0 >> drawRow d 1 r1 >> drawRow d 2 r2
-  where SDPage' (r0, r1, r2) = display
-        drawRow = drawSDRow
-        d = StreamDeck' (dev, Just ds, display)
-render (StreamDeckXL' (dev, Just ds, display)) = drawRow d 0 r0 >> drawRow d 1 r1 >> drawRow d 2 r2 >> drawRow d 3 r3
-  where XLPage' (r0, r1, r2, r3) = display
-        drawRow = drawXLRow
-        d = StreamDeckXL' (dev, Just ds, display)
-render _ = undefined
-
-update :: Deck a -> Page b -> IO (Deck a)
-update (StreamDeckMini' (di, Just ds, _)) (MiniPage' p) = do
-    let new = StreamDeckMini' (di, Just ds, MiniPage' p)
-    render new >> return new
-update (StreamDeck' (di, Just ds, _)) (SDPage' p) = do
-    let new = StreamDeck' (di, Just ds, SDPage' p)
-    render new >> return new
-update (StreamDeckXL' (di, Just ds, _)) (XLPage' p) = do
-    let new = StreamDeckXL' (di, Just ds, XLPage' p)
-    render new >> return new
-update _ _ = undefined
+setKeyImage :: DW.Word8 -> BS.ByteString -> HID.Device -> IO ()
+setKeyImage key _ _ | clamp (0, keyCount) key /= key = fail "Invalid key index"
+setKeyImage key image deck = do
+    let chunks = BS.chunksOf imageReportPayloadLength image
+    let lastIndex = fromIntegral $ length chunks - 1
+        
+    forM_ (zip [0..] chunks) $ \(pageNumber, chunk) -> do
+        let len :: Num a => a
+            len = fromIntegral $ BS.length chunk
+        let isLastChunk =  lastIndex == pageNumber
+        let header = BS.pack
+                [ 0x02
+                , 0x07
+                , key
+                , if isLastChunk then 1 else 0
+                , len .&. 0xFF
+                , len .>>. 8
+                , pageNumber .&. 0xFF
+                , pageNumber .>>. 8
+                ]
+        let padding = BS.replicate (imageReportPayloadLength - len) 0
+        let payload = header <> chunk <> padding
+        void $ HID.write deck payload

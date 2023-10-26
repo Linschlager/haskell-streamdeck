@@ -75,7 +75,9 @@ executable streamdeck
         , hidapi
         , bytestring
         , mtl
-        , split
+        , extra
+        , JuicyPixels
+        , JuicyPixels-extra
 
     -- Directories containing source files.
     hs-source-dirs:   app
@@ -87,7 +89,9 @@ library
     import:           common
 
     -- Modules included in this executable, other than Main.
-    exposed-modules: System.Hardware.Streamdeck
+    exposed-modules:
+          System.Hardware.Streamdeck
+        , Data.ByteString.Extra
 
     -- LANGUAGE extensions used by modules in this package.
     -- other-extensions:
@@ -98,7 +102,9 @@ library
         , hidapi
         , bytestring
         , mtl
-        , split
+        , extra
+        , JuicyPixels
+        , JuicyPixels-extra
 
     -- Directories containing source files.
     hs-source-dirs:   lib
