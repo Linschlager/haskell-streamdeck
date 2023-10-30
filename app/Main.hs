@@ -7,8 +7,6 @@ import Data.ByteString qualified as BS
 import System.HIDAPI qualified as HID
 
 import Codec.Picture
-import Codec.Picture.Extra
-import Codec.Picture.Types (ColorSpaceConvertible (convertImage), TransparentPixel (dropTransparency))
 
 main :: IO ()
 main = do
@@ -26,24 +24,15 @@ mkImageFromColor color = generateImage (const $ const color) 72 72
 
 doStuff :: HID.Device -> IO ()
 doStuff deck = do
-    --Right (dynImg, meta) <- readImageWithMetadata "./streamdeck_key.png"
-    --let rgbImg = convertRGB8 dynImg
+    let outImg = BS.toStrict $ encodeJpeg $ mkImageFromColor $ PixelYCbCr8 255 0 255
 
-    let rgbaImg = mkImageFromColor $ PixelRGBA8 255 0 0 255
-    let scaledImg = scaleBilinear 72 72 rgbaImg
+    BS.writeFile "out.jpg" outImg
 
-    let jpg = BS.toStrict $ encodeJpeg $ convertImage $ pixelMap dropTransparency scaledImg
-    BS.writeFile "out.jpg" jpg
-
-    let bmp = BS.toStrict $ encodeBitmap scaledImg  
-    BS.writeFile "out.bmp" bmp
-    
     -- traceShowM =<< readKeyStates deck
     maybeKey <- readActiveKey deck
     traceShowM maybeKey
     case maybeKey of
-        Just key -> do
-            setKeyImage (fromIntegral key) bmp deck
+        Just key -> setKeyImage (fromIntegral key) outImg deck
         Nothing -> pure ()
     
     doStuff deck
