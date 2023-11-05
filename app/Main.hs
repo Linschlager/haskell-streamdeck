@@ -24,9 +24,11 @@ mkImageFromColor color = generateImage (const $ const color) 72 72
 
 doStuff :: HID.Device -> IO ()
 doStuff deck = do
-    let outImg = BS.toStrict $ encodeJpeg $ mkImageFromColor $ PixelYCbCr8 255 0 255
+    Right rawImg <- readImage "./cat/cat-truecolor.bmp"
 
-    BS.writeFile "out.jpg" outImg
+    let outImg = BS.toStrict $ encodeBitmap $ convertRGB8 rawImg
+
+    BS.writeFile "out.bmp" outImg
 
     -- traceShowM =<< readKeyStates deck
     maybeKey <- readActiveKey deck

@@ -113,6 +113,16 @@ getFirmwareVersion deck = do
     (_reportId, serialNumber) <- HID.getFeatureReport deck 0x05 32
     pure $ BS.drop 6 serialNumber
 
+fixData :: BS.ByteString -> BS.ByteString
+fixData img = do
+    let byte = BS.head img
+    
+    if byte > 0 then
+        img
+    else
+        BS.cons (1 .|. byte) (BS.tail img)
+
+
 setKeyImage :: DW.Word8 -> BS.ByteString -> HID.Device -> IO ()
 setKeyImage key _ _ | clamp (0, keyCount) key /= key = fail "Invalid key index"
 setKeyImage key image deck = do
@@ -122,7 +132,7 @@ setKeyImage key image deck = do
     forM_ (zip [0..] chunks) $ \(pageNumber, chunk) -> do
         let len :: Num a => a
             len = fromIntegral $ BS.length chunk
-        let isLastChunk =  lastIndex == pageNumber
+        let isLastChunk = lastIndex == pageNumber
         let header = BS.pack
                 [ 0x02
                 , 0x07
@@ -134,5 +144,5 @@ setKeyImage key image deck = do
                 , pageNumber .>>. 8
                 ]
         let padding = BS.replicate (imageReportPayloadLength - len) 0
-        let payload = header <> chunk <> padding
+        let payload = header <> fixData chunk <> padding
         void $ HID.write deck payload
