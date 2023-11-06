@@ -10,7 +10,6 @@ import Data.Ord
 import Data.Bits
 import Control.Monad
 import Data.List ( findIndex )
-import Debug.Trace
 
 keyCount :: Num a => a
 keyCount = 15
@@ -116,7 +115,7 @@ getFirmwareVersion deck = do
 fixData :: BS.ByteString -> BS.ByteString
 fixData img = do
     let byte = BS.head img
-    
+
     if byte > 0 then
         img
     else
@@ -128,18 +127,17 @@ setKeyImage key _ _ | clamp (0, keyCount) key /= key = fail "Invalid key index"
 setKeyImage key image deck = do
     let chunks = BS.chunksOf imageReportPayloadLength image
     let lastIndex = fromIntegral $ length chunks - 1
-        
+
     forM_ (zip [0..] chunks) $ \(pageNumber, chunk) -> do
-        let len :: Num a => a
-            len = fromIntegral $ BS.length chunk
+        let len = BS.length chunk
         let isLastChunk = lastIndex == pageNumber
         let header = BS.pack
                 [ 0x02
                 , 0x07
                 , key
                 , if isLastChunk then 1 else 0
-                , len .&. 0xFF
-                , len .>>. 8
+                , fromIntegral $ len .&. 0xFF
+                , fromIntegral $ len .>>. 8
                 , pageNumber .&. 0xFF
                 , pageNumber .>>. 8
                 ]

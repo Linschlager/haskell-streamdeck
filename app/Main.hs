@@ -7,6 +7,9 @@ import Data.ByteString qualified as BS
 import System.HIDAPI qualified as HID
 
 import Codec.Picture
+import Codec.Picture.Types (ColorSpaceConvertible(convertImage))
+import Codec.Picture.Extra (flipVertically, crop)
+import qualified Data.ByteString as P
 
 main :: IO ()
 main = do
@@ -15,7 +18,7 @@ main = do
         [] -> fail "no devices found"
         [ device ] -> withDevice device $ \deck -> do
             reset deck
-            doStuff deck
+            doStuff2 deck
 
         _ -> fail "multiple devices found"
 
@@ -24,12 +27,10 @@ mkImageFromColor color = generateImage (const $ const color) 72 72
 
 doStuff :: HID.Device -> IO ()
 doStuff deck = do
-    Right rawImg <- readImage "./cat/cat-truecolor.bmp"
-
-    let outImg = BS.toStrict $ encodeBitmap $ convertRGB8 rawImg
-
-    BS.writeFile "out.bmp" outImg
-
+    Right inImg <- readImage "./cat/cat.jpg"
+    let rawImg = convertImage $ convertRGB8 inImg
+    let transformedImg = flipVertically rawImg
+    let outImg = BS.toStrict $ encodeJpegAtQuality 100 transformedImg
     -- traceShowM =<< readKeyStates deck
     maybeKey <- readActiveKey deck
     traceShowM maybeKey
@@ -38,6 +39,30 @@ doStuff deck = do
         Nothing -> pure ()
     
     doStuff deck
+
+doStuff2 :: HID.Device -> IO ()
+doStuff2 deck = do
+    Right inImg <- readImage "./cat/luna.jpg"
+    let dynamicImage = convertImage $ convertRGB8 inImg
+    -- let transformedImg = flipVertically dynamicImage
+
+    let newWidth = 72 * 5
+    let newHeight = 72 * 3
+
+    let resizedImage = generateImage (\x y -> pixelAt dynamicImage (x * imageWidth dynamicImage `div` newWidth) (y * imageHeight dynamicImage `div` newHeight)) newWidth newHeight
+
+    let outImg = BS.toStrict $ encodeJpegAtQuality 100 resizedImage
+
+    BS.writeFile "out.jpg" outImg
+    -- traceShowM =<< readKeyStates deck
+    maybeKey <- readActiveKey deck
+    traceShowM maybeKey
+    case maybeKey of
+        Just key -> setKeyImage (fromIntegral key) outImg deck
+        Nothing -> pure ()
+    
+    doStuff deck
+
 
 -- Read Buttons
 readKeys :: HID.Device -> IO ()
