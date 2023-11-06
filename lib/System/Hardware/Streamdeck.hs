@@ -123,7 +123,7 @@ fixData img = do
 
 
 setKeyImage :: DW.Word8 -> BS.ByteString -> HID.Device -> IO ()
-setKeyImage key _ _ | clamp (0, keyCount) key /= key = fail "Invalid key index"
+setKeyImage key _ _ | clamp (0, keyCount) key /= key = fail $ "Invalid key index: " <> show key
 setKeyImage key image deck = do
     let chunks = BS.chunksOf imageReportPayloadLength image
     let lastIndex = fromIntegral $ length chunks - 1
