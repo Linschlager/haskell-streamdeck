@@ -27,7 +27,7 @@
       in
       lib.recursiveUpdate
       {
-        packages.${system}.default = inputs.self.packages.${system}.${defaultGhc}.${pname};
+        packages.${system}.default = inputs.self.packages.${system}."${pname}-${defaultGhc}";
         devShells.${system}.default = inputs.self.devShells.${system}.${defaultGhc};
         formatter.${system} = pkgs.nixpkgs-fmt;
       }
@@ -41,7 +41,7 @@
             };
           in
           {
-            packages.${system}.${ghcName}.${pname} = hp.${pname};
+            packages.${system}."${pname}-${ghcName}" = hp.${pname};
             devShells.${system}.${ghcName} = hp.shellFor {
               packages = ps: [ ps.${pname} ];
               nativeBuildInputs = with hp; [
