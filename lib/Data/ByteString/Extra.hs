@@ -1,7 +1,8 @@
 module Data.ByteString.Extra where
-    
+
+import Data.ByteString qualified as BS
 import Data.List.Extra qualified as List
-import Data.ByteString ( pack, unpack, ByteString )
+import Internal.Prelude
 
 chunksOf :: Int -> ByteString -> [ByteString]
-chunksOf i = fmap pack . List.chunksOf i . unpack
+chunksOf i = fmap BS.pack . List.chunksOf i . BS.unpack

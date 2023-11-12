@@ -10,35 +10,33 @@
         else if isAttrs xs then mapAttrsToList f xs
         else error "foreach: expected list or attrset"
       );
-
       pname = "streamdeck";
       src = inputs.nix-filter.lib {
         root = ./.;
         include = [
-          "src"
-          "test"
+          "lib"
           "${pname}.cabal"
+          "CHANGELOG.md"
           "LICENCE"
         ];
       };
     in
     foreach inputs.nixpkgs.legacyPackages (system: pkgs:
       let
-        defaultGhc = "ghc" + builtins.replaceStrings ["."] [""] pkgs.haskellPackages.ghc.version;
+        defaultGhc = builtins.replaceStrings ["." "-"] ["" ""] pkgs.haskellPackages.ghc.name;
       in
       lib.recursiveUpdate
       {
         packages.${system}.default = inputs.self.packages.${system}.${defaultGhc}.${pname};
         devShells.${system}.default = inputs.self.devShells.${system}.${defaultGhc};
+        formatter.${system} = pkgs.nixpkgs-fmt;
       }
       (foreach (lib.filterAttrs  (name: _: builtins.match "ghc[0-9]+" name != null) pkgs.haskell.packages)
         (ghcName: haskellPackages:
           let
             hp = haskellPackages.override {
-              overrides = self: super: with pkgs.haskell.lib; builtins.trace "GHC ${super.ghc.version}" {
+              overrides = self: super: {
                 "${pname}" =  super.callCabal2nix pname src { };
-              } // lib.optionalAttrs (lib.versionAtLeast super.ghc.version "9.6") {
-                fourmolu = super.fourmolu_0_14_0_0;
               };
             };
           in
@@ -53,9 +51,6 @@
               ];
             };
           }
-        ) //
-      {
-        formatter.${system} = pkgs.nixpkgs-fmt;
-      }
+        )
     ));
 }
