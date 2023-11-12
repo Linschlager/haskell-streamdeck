@@ -71,6 +71,9 @@ blankKeyImage = BS.pack [
 vendorID :: DW.Word16
 vendorID = 0x0fd9
 
+-- TODO:
+-- - Support multiple device types
+-- - Support multiple devices connected at the same time
 enumerate :: IO [HID.DeviceInfo]
 enumerate = HID.enumerate (Just vendorID) (Just 0x0080)
 
