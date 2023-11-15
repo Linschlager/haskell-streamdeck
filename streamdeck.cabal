@@ -44,7 +44,7 @@ common common
 library
     import:           common
     exposed-modules:
-        System.Hardware.Streamdeck,
+        System.Hardware.StreamDeck,
         Data.ByteString.Extra,
     other-modules:
         Internal.Prelude,
