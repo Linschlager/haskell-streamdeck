@@ -44,7 +44,9 @@ common common
 library
     import:           common
     exposed-modules:
-        System.Hardware.Streamdeck,
+        System.Hardware.StreamDeck,
+        System.Hardware.Devices.StreamDeckMk2,
+        System.Hardware.Devices.StreamDeckPedal,
         Data.ByteString.Extra,
     other-modules:
         Internal.Prelude,
@@ -53,4 +55,9 @@ library
         hidapi,
         bytestring,
         extra,
+        generic-lens,
+        lens,
+        mtl,
+        transformers-base,
+        unliftio,
     hs-source-dirs:   lib
