@@ -2,33 +2,12 @@
 
 module System.Hardware.StreamDeck where
 
-import Control.Monad.Base (MonadBase (liftBase))
 import Data.ByteString qualified as BS
 import Data.ByteString.Extra qualified as BS
-import Data.Generics.Product qualified as Lens
-import Data.List (findIndex)
-import GHC.Records qualified as GHC
 import Internal.Prelude
 import System.HIDAPI qualified as HID
 
-type HasDeviceInfo d =
-    ( GHC.HasField "deviceInfo" d HID.DeviceInfo
-    , Lens.HasField "deviceInfo" d d HID.DeviceInfo HID.DeviceInfo
-    )
-
-class (HasDeviceInfo d) => IsDevice d where
-    fromDeviceInfo :: HID.DeviceInfo -> d
-
-    withDevice :: (MonadUnliftIO m) => d -> (HID.Device -> m a) -> m a
-    withDevice d f = do
-        unliftIO <- askRunInIO
-        liftIO $ HID.withHIDAPI do
-            dev <- liftIO $ HID.openDeviceInfo d.deviceInfo
-            res <- unliftIO $ f dev
-            HID.close dev
-            pure res
-
-class (IsDevice s) => IsStreamDeck s where
+class IsDevice d where
     -- | TODO document this field
     deviceIdentifier :: Word16
 
@@ -36,12 +15,32 @@ class (IsDevice s) => IsStreamDeck s where
     vendorIdentifier :: Word16
     vendorIdentifier = 0x0fd9
 
-    enumerate :: (MonadIO m) => m [s]
-    enumerate =
-        liftIO
-            $ fromDeviceInfo @s
-            <$$> HID.enumerate (Just $ vendorIdentifier @s) (Just $ deviceIdentifier @s)
+    serialNumber :: Maybe HID.SerialNumber
+    serialNumber = Nothing
 
+    enumerate :: (MonadIO m) => m [HID.DeviceInfo]
+    enumerate = do
+        devices <-
+            liftIO $ HID.enumerate (Just $ vendorIdentifier @d) (Just $ deviceIdentifier @d)
+        let sn = serialNumber @d
+        pure
+            $ devices
+            & filter (\d -> isNothing sn || sn == d.serialNumber)
+
+    withDevice
+        :: (MonadUnliftIO m)
+        => (HID.DeviceInfo -> HID.Device -> m a)
+        -> m [a]
+    withDevice f = do
+        devices <- enumerate @d
+        unliftIO <- askRunInIO
+        liftIO $ HID.withHIDAPI $ forM devices $ \deviceInfo -> do
+            dev <- liftIO $ HID.openDeviceInfo deviceInfo
+            res <- unliftIO $ f deviceInfo dev
+            HID.close dev
+            pure res
+
+class (IsDevice s) => IsStreamDeck s where
     -- | TODO document this field
     buttonRows :: Int
 
@@ -74,10 +73,6 @@ class (IsDevice s) => IsStreamDeck s where
         pure $ (0 /=) <$> BS.unpack buttons
 
     -- | TODO document this func
-    readActiveKey :: (MonadIO m) => StreamDeckT m s (Maybe Int)
-    readActiveKey = findIndex id <$> readKeyStates @s
-
-    -- | TODO document this func
     resetKeyStream :: (MonadIO m) => StreamDeckT m s ()
     resetKeyStream = do
         deck <- view #device
@@ -106,15 +101,15 @@ class (IsDevice s) => IsStreamDeck s where
     getSerialNumber :: (MonadIO m) => StreamDeckT m s ByteString
     getSerialNumber = do
         deck <- view #device
-        (_reportId, serialNumber) <- liftIO $ HID.getFeatureReport deck 0x06 32
-        pure $ BS.drop 2 serialNumber
+        (_reportId, sn) <- liftIO $ HID.getFeatureReport deck 0x06 32
+        pure $ BS.drop 2 sn
 
     -- | TODO document this func
     getFirmwareVersion :: (MonadIO m) => StreamDeckT m s ByteString
     getFirmwareVersion = do
         deck <- view #device
-        (_reportId, serialNumber) <- liftIO $ HID.getFeatureReport deck 0x05 32
-        pure $ BS.drop 6 serialNumber
+        (_reportId, sn) <- liftIO $ HID.getFeatureReport deck 0x05 32
+        pure $ BS.drop 6 sn
 
 class (IsStreamDeck s) => IsStreamDeckWithDisplayButtons s where
     -- | TODO document this field
@@ -126,15 +121,15 @@ class (IsStreamDeck s) => IsStreamDeckWithDisplayButtons s where
     buttonImageHeight = 72
 
     -- | TODO document this func
-    setKeyImage
+    setButtonImage
         :: (MonadFail m, MonadIO m)
         => Int
         -> ByteString
         -> StreamDeckT m s ()
-    setKeyImage key _
+    setButtonImage key _
         | clamp (0, buttonCount @s) key /= key =
             fail $ "Key index out of bounds: " <> show key
-    setKeyImage key image = do
+    setButtonImage key image = do
         deck <- view #device
 
         let chunks = BS.chunksOf (imageReportPayloadLength @s) image
@@ -158,7 +153,10 @@ class (IsStreamDeck s) => IsStreamDeckWithDisplayButtons s where
             let payload = header <> chunk <> padding
             void $ liftIO $ HID.write deck payload
 
-newtype StreamDeckState s = StreamDeckState {device :: HID.Device}
+data StreamDeckState s = StreamDeckState
+    { deviceInfo :: HID.DeviceInfo
+    , device :: HID.Device
+    }
     deriving stock (Generic)
 
 newtype StreamDeckT m s a = StreamDeck {_runApp :: ReaderT (StreamDeckState s) m a}
@@ -170,14 +168,18 @@ newtype StreamDeckT m s a = StreamDeck {_runApp :: ReaderT (StreamDeckState s) m
         , MonadUnliftIO
         , MonadReader (StreamDeckState s)
         , MonadFail
+        , MonadFix
         )
 
 instance (MonadIO m) => MonadBase IO (StreamDeckT m s) where
     liftBase = liftIO
 
 runStreamDeck
-    :: forall s m a. (IsStreamDeck s, MonadUnliftIO m) => s -> StreamDeckT m s a -> m a
-runStreamDeck s f =
-    withDevice s $ \device -> do
+    :: forall s m a
+     . (IsDevice s, MonadUnliftIO m)
+    => StreamDeckT m s a
+    -> m [a]
+runStreamDeck f =
+    withDevice @s $ \deviceInfo device -> do
         let state = StreamDeckState{..}
         runReaderT f._runApp state
