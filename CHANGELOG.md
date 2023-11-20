@@ -3,7 +3,7 @@
 ## 0.0.1  -- 2018-04-18
 
 * Migrated existing functionality into own library from https://github.com/wuest/streamdeck-controller
-* Supports: enumeration, read (limited), write (limited)
+* Supports: enumeration, read (limited), write (limited) 
 
 ## 0.1.0 -- 2019-11-18
 
