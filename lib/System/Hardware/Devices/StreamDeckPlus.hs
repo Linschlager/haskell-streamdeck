@@ -11,4 +11,6 @@ instance IsStreamDeck StreamDeckPlus where
     buttonRows = 2
     buttonCols = 4
 
-instance IsStreamDeckWithDisplayButtons StreamDeckPlus
+instance IsStreamDeckWithDisplayButtons StreamDeckPlus where
+    buttonImageWidth = 144
+    buttonImageHeight = 144
