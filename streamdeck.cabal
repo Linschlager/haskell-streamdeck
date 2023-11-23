@@ -44,11 +44,12 @@ common common
 library
     import:           common
     exposed-modules:
-        System.Hardware.StreamDeck,
         System.Hardware.Devices.StreamDeckMk2,
         System.Hardware.Devices.StreamDeckPedal,
-        Data.ByteString.Extra,
+        System.Hardware.Devices.StreamDeckPlus,
+        System.Hardware.StreamDeck,
     other-modules:
+        Data.ByteString.Extra,
         Internal.Prelude,
     build-depends:
         base,
