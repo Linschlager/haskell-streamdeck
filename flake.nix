@@ -23,34 +23,47 @@
     in
     foreach inputs.nixpkgs.legacyPackages (system: pkgs:
       let
-        defaultGhc = builtins.replaceStrings ["." "-"] ["" ""] pkgs.haskellPackages.ghc.name;
+        defaultGhc = builtins.replaceStrings [ "." "-" ] [ "" "" ] pkgs.haskellPackages.ghc.name;
       in
       lib.recursiveUpdate
-      {
-        packages.${system}.default = inputs.self.packages.${system}."${pname}-${defaultGhc}";
-        devShells.${system}.default = inputs.self.devShells.${system}.${defaultGhc};
-        formatter.${system} = pkgs.nixpkgs-fmt;
-      }
-      (foreach (lib.filterAttrs  (name: _: builtins.match "ghc[0-9]+" name != null) pkgs.haskell.packages)
-        (ghcName: haskellPackages:
-          let
-            hp = haskellPackages.override {
-              overrides = self: super: {
-                "${pname}" =  super.callCabal2nix pname src { };
+        {
+          packages.${system}.default = inputs.self.packages.${system}."${pname}-${defaultGhc}";
+          devShells.${system}.default = inputs.self.devShells.${system}.${defaultGhc};
+          formatter.${system} = pkgs.nixpkgs-fmt;
+        }
+        (foreach (lib.filterAttrs (name: _: builtins.match "ghc[0-9]+" name != null) pkgs.haskell.packages)
+          (ghcName: haskellPackages:
+            let
+              hp = haskellPackages.override {
+                overrides = self: super: with pkgs.haskell.lib.compose; {
+                  hidapi =
+                    if (system == "x86_64-darwin")
+                    then
+                      overrideCabal
+                        (drv: {
+                          extraLibraries = [ ];
+                          librarySystemDepends = [
+                            pkgs.darwin.apple_sdk.frameworks.AppKit
+                          ];
+                        })
+                        (
+                          (super.hidapi.override { systemd = null; }).overrideAttrs (attrs: { meta = attrs.meta // { badPlatforms = [ ]; }; }))
+                    else super.hidapi;
+                  "${pname}" = super.callCabal2nix pname src { };
+                };
               };
-            };
-          in
-          {
-            packages.${system}."${pname}-${ghcName}" = hp.${pname};
-            devShells.${system}.${ghcName} = hp.shellFor {
-              packages = ps: [ ps.${pname} ];
-              nativeBuildInputs = with hp; [
-                cabal-install
-                fourmolu
-                haskell-language-server
-              ];
-            };
-          }
-        )
-    ));
+            in
+            {
+              packages.${system}."${pname}-${ghcName}" = hp.${pname};
+              devShells.${system}.${ghcName} = hp.shellFor {
+                packages = ps: [ ps.${pname} ];
+                nativeBuildInputs = with hp; [
+                  cabal-install
+                  fourmolu
+                  haskell-language-server
+                ];
+              };
+            }
+          )
+        ));
 }
