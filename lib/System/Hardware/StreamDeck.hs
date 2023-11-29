@@ -42,12 +42,6 @@ class IsDevice d where
 
 class (IsDevice s) => IsStreamDeck s where
     -- | TODO document this field
-    buttonRows :: Int
-
-    -- | TODO document this field
-    buttonCols :: Int
-
-    -- | TODO document this field
     imageReportLength :: Int
     imageReportLength = 1024
 
@@ -59,24 +53,16 @@ class (IsDevice s) => IsStreamDeck s where
     imageReportPayloadLength :: Int
     imageReportPayloadLength = imageReportLength @s - imageReportHeaderLength @s
 
-    -- | TODO document this field
-    buttonCount :: Int
-    buttonCount = buttonCols @s * buttonRows @s
-
     -- | TODO document this func
-    readKeyStates :: (MonadIO m) => StreamDeckT m s [Bool]
-    readKeyStates = do
+    readInput :: (MonadIO m) => StreamDeckT m s ByteString
+    readInput = do
         deck <- view #device
-
-        states <- liftIO $ HID.read deck (4 + buttonCount @s)
-        let buttons = BS.drop 4 states
-        pure $ (0 /=) <$> BS.unpack buttons
+        liftIO $ HID.read deck 512
 
     -- | TODO document this func
     resetKeyStream :: (MonadIO m) => StreamDeckT m s ()
     resetKeyStream = do
         deck <- view #device
-
         let payload = BS.pack $ 0x02 : replicate (imageReportLength @s - 1) 0
         void $ liftIO $ HID.write deck payload
 
@@ -111,7 +97,38 @@ class (IsDevice s) => IsStreamDeck s where
         (_reportId, sn) <- liftIO $ HID.getFeatureReport deck 0x05 32
         pure $ BS.drop 6 sn
 
+class (IsStreamDeck s) => IsStreamDeckWithButtons s where
+    buttonPressEventCode :: ByteString
+    buttonCount :: Int
+    parseButtonStates :: ByteString -> Maybe [Bool]
+    parseButtonStates bs
+        | eventCode /= buttonPressEventCode @s = Nothing
+        | otherwise = Just buttonFlags
+      where
+        (eventCode, message) = BS.splitAt (BS.length $ buttonPressEventCode @s) bs
+        buttonCodes = BS.take (buttonCount @s) message
+        buttonFlags = parseButtonCode <$> BS.unpack buttonCodes
+        parseButtonCode :: Word8 -> Bool
+        parseButtonCode 0x00 = False
+        parseButtonCode 0x01 = True
+        parseButtonCode _ = undefined
+
 class (IsStreamDeck s) => IsStreamDeckWithDisplayButtons s where
+    displayButtonPressEventCode :: ByteString
+    displayButtonCount :: Int
+    parseDisplayButtonStates :: ByteString -> Maybe [Bool]
+    parseDisplayButtonStates bs
+        | eventCode /= displayButtonPressEventCode @s = Nothing
+        | otherwise = Just buttonFlags
+      where
+        (eventCode, message) = BS.splitAt (BS.length $ displayButtonPressEventCode @s) bs
+        buttonCodes = BS.take (displayButtonCount @s) message
+        buttonFlags = parseButtonCode <$> BS.unpack buttonCodes
+        parseButtonCode :: Word8 -> Bool
+        parseButtonCode 0x00 = False
+        parseButtonCode 0x01 = True
+        parseButtonCode _ = undefined
+
     -- | TODO document this field
     buttonImageWidth :: Int
     buttonImageWidth = 72
@@ -127,7 +144,7 @@ class (IsStreamDeck s) => IsStreamDeckWithDisplayButtons s where
         -> ByteString
         -> StreamDeckT m s ()
     setButtonImage key _
-        | clamp (0, buttonCount @s) key /= key =
+        | clamp (0, displayButtonCount @s) key /= key =
             fail $ "Key index out of bounds: " <> show key
     setButtonImage key image = do
         deck <- view #device
@@ -152,6 +169,26 @@ class (IsStreamDeck s) => IsStreamDeckWithDisplayButtons s where
             let padding = BS.replicate (imageReportPayloadLength @s - len) 0
             let payload = header <> chunk <> padding
             void $ liftIO $ HID.write deck payload
+
+class (IsStreamDeck s) => IsStreamDeckWithTouchScreen s where
+    screenTouchEventCode :: ByteString
+
+    parseScreenTouchEvent :: ByteString -> Maybe (Int, Int)
+    parseScreenTouchEvent bs
+        | eventCode /= screenTouchEventCode @s = Nothing
+        | otherwise = Just (encode rawX, encode rawY)
+      where
+        (eventCode, message) = BS.splitAt (BS.length $ screenTouchEventCode @s) bs
+        (rawX, rawY) = BS.splitAt 2 $ BS.take 4 message
+        encode :: ByteString -> Int
+        encode = BS.foldr (\b acc -> acc .<<. 8 .&. fromIntegral b) 0
+
+    screenSwipeEventCode :: ByteString
+
+    parseScreenSwipeEvent :: ByteString -> Maybe (Int, Int)
+    parseScreenSwipeEvent _ = undefined
+
+class (IsStreamDeck s) => IsStreamDeckWithKnobs s
 
 data StreamDeckState s = StreamDeckState
     { deviceInfo :: HID.DeviceInfo
