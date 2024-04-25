@@ -2,8 +2,8 @@
 
 module System.Hardware.Devices.StreamDeckMk2 where
 
-import Internal.Prelude
 import System.Hardware.StreamDeck
+import Prelude
 
 data StreamDeckMk2
 

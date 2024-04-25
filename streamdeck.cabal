@@ -36,6 +36,7 @@ common common
         OverloadedLabels
         OverloadedRecordDot
         OverloadedStrings
+        PackageImports
         RecordWildCards
         RecursiveDo
         TypeFamilies
@@ -50,14 +51,12 @@ library
         System.Hardware.StreamDeck,
     other-modules:
         Data.ByteString.Extra,
-        Internal.Prelude,
+        Prelude,
     build-depends:
         base,
-        hidapi,
         bytestring,
         extra,
-        generic-lens,
-        lens,
+        hidapi,
         mtl,
         transformers-base,
         unliftio,

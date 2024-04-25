@@ -4,8 +4,8 @@ module System.Hardware.StreamDeck where
 
 import Data.ByteString qualified as BS
 import Data.ByteString.Extra qualified as BS
-import Internal.Prelude
 import System.HIDAPI qualified as HID
+import Prelude
 
 class IsDevice d where
     -- | TODO document this field
@@ -23,9 +23,7 @@ class IsDevice d where
         devices <-
             liftIO $ HID.enumerate (Just $ vendorIdentifier @d) (Just $ deviceIdentifier @d)
         let sn = serialNumber @d
-        pure
-            $ devices
-            & filter (\d -> isNothing sn || sn == d.serialNumber)
+        pure $ filter (\d -> isNothing sn || sn == d.serialNumber) devices
 
     withDevice
         :: (MonadUnliftIO m)
@@ -56,20 +54,20 @@ class (IsDevice s) => IsStreamDeck s where
     -- | TODO document this func
     readInput :: (MonadIO m) => StreamDeckT m s ByteString
     readInput = do
-        deck <- view #device
+        deck <- asks (.device)
         liftIO $ HID.read deck 512
 
     -- | TODO document this func
     resetKeyStream :: (MonadIO m) => StreamDeckT m s ()
     resetKeyStream = do
-        deck <- view #device
+        deck <- asks (.device)
         let payload = BS.pack $ 0x02 : replicate (imageReportLength @s - 1) 0
         void $ liftIO $ HID.write deck payload
 
     -- | TODO document this func
     reset :: (MonadIO m) => StreamDeckT m s ()
     reset = do
-        deck <- view #device
+        deck <- asks (.device)
         let payload = BS.pack $ 0x02 : replicate 30 0
         void $ liftIO $ HID.sendFeatureReport deck 0x03 payload
 
@@ -79,55 +77,56 @@ class (IsDevice s) => IsStreamDeck s where
         => Int
         -> StreamDeckT m s ()
     setBrightness (clamp (0, 100) -> percent) = do
-        deck <- view #device
+        deck <- asks (.device)
         let payload = BS.pack [0x08, fromIntegral percent]
         void $ liftIO $ HID.sendFeatureReport deck 0x03 payload
 
     -- | TODO document this func
     getSerialNumber :: (MonadIO m) => StreamDeckT m s ByteString
     getSerialNumber = do
-        deck <- view #device
+        deck <- asks (.device)
         (_reportId, sn) <- liftIO $ HID.getFeatureReport deck 0x06 32
         pure $ BS.drop 2 sn
 
     -- | TODO document this func
     getFirmwareVersion :: (MonadIO m) => StreamDeckT m s ByteString
     getFirmwareVersion = do
-        deck <- view #device
+        deck <- asks (.device)
         (_reportId, sn) <- liftIO $ HID.getFeatureReport deck 0x05 32
         pure $ BS.drop 6 sn
 
 class (IsStreamDeck s) => IsStreamDeckWithButtons s where
     buttonPressEventCode :: ByteString
     buttonCount :: Int
-    parseButtonStates :: ByteString -> Maybe [Bool]
-    parseButtonStates bs
+
+    parseActiveButtons :: ByteString -> Maybe [Int]
+    parseActiveButtons bs
         | eventCode /= buttonPressEventCode @s = Nothing
-        | otherwise = Just buttonFlags
+        | otherwise = Just $ fst <$> activeButtons
       where
         (eventCode, message) = BS.splitAt (BS.length $ buttonPressEventCode @s) bs
         buttonCodes = BS.take (buttonCount @s) message
-        buttonFlags = parseButtonCode <$> BS.unpack buttonCodes
-        parseButtonCode :: Word8 -> Bool
-        parseButtonCode 0x00 = False
-        parseButtonCode 0x01 = True
-        parseButtonCode _ = undefined
+        activeButtons = filter (isActive . snd) $ zip [0 ..] $ BS.unpack buttonCodes
+        isActive :: Word8 -> Bool
+        isActive 0x00 = False
+        isActive 0x01 = True
+        isActive _ = undefined
 
 class (IsStreamDeck s) => IsStreamDeckWithDisplayButtons s where
     displayButtonPressEventCode :: ByteString
     displayButtonCount :: Int
-    parseDisplayButtonStates :: ByteString -> Maybe [Bool]
-    parseDisplayButtonStates bs
+    parseActiveDisplayButtons :: ByteString -> Maybe [Int]
+    parseActiveDisplayButtons bs
         | eventCode /= displayButtonPressEventCode @s = Nothing
-        | otherwise = Just buttonFlags
+        | otherwise = Just $ fst <$> activeButtons
       where
         (eventCode, message) = BS.splitAt (BS.length $ displayButtonPressEventCode @s) bs
         buttonCodes = BS.take (displayButtonCount @s) message
-        buttonFlags = parseButtonCode <$> BS.unpack buttonCodes
-        parseButtonCode :: Word8 -> Bool
-        parseButtonCode 0x00 = False
-        parseButtonCode 0x01 = True
-        parseButtonCode _ = undefined
+        activeButtons = filter (isActive . snd) $ zip [0 ..] $ BS.unpack buttonCodes
+        isActive :: Word8 -> Bool
+        isActive 0x00 = False
+        isActive 0x01 = True
+        isActive _ = undefined
 
     -- | TODO document this field
     buttonImageWidth :: Int
@@ -147,7 +146,7 @@ class (IsStreamDeck s) => IsStreamDeckWithDisplayButtons s where
         | clamp (0, displayButtonCount @s) key /= key =
             fail $ "Key index out of bounds: " <> show key
     setButtonImage key image = do
-        deck <- view #device
+        deck <- asks (.device)
 
         let chunks = BS.chunksOf (imageReportPayloadLength @s) image
         let lastIndex = fromIntegral $ length chunks - 1
@@ -188,15 +187,34 @@ class (IsStreamDeck s) => IsStreamDeckWithTouchScreen s where
     parseScreenSwipeEvent :: ByteString -> Maybe (Int, Int)
     parseScreenSwipeEvent _ = undefined
 
-class (IsStreamDeck s) => IsStreamDeckWithKnobs s
+class (IsStreamDeck s) => IsStreamDeckWithKnobs s where
+    knobEventCode :: ByteString
+    knobCount :: Int
+
+    parseActiveKnobs :: ByteString -> Maybe [(Int, Int)]
+    parseActiveKnobs bs
+        | eventCode /= knobEventCode @s || BS.null message = Nothing
+        | BS.head message == 0x00 = Just $ (,0) . fst <$> pressedKnobs
+        | BS.head message == 0x01 = Just rotatedKnobs
+        | otherwise = Nothing
+      where
+        (eventCode, message) = BS.splitAt (BS.length $ knobEventCode @s) bs
+        knobCodes = BS.take (knobCount @s) $ BS.tail message
+        pressedKnobs = filter (isActive . snd) $ zip [0 ..] $ BS.unpack knobCodes
+        isActive :: Word8 -> Bool
+        isActive 0x00 = False
+        isActive 0x01 = True
+        isActive _ = undefined
+        knobRotationCodes = BS.take (knobCount @s) $ BS.tail message
+        rotatedKnobs =
+            zip [0 ..] $ fromIntegral @Int8 . fromIntegral <$> BS.unpack knobRotationCodes
 
 data StreamDeckState s = StreamDeckState
     { deviceInfo :: HID.DeviceInfo
     , device :: HID.Device
     }
-    deriving stock (Generic)
 
-newtype StreamDeckT m s a = StreamDeck {_runApp :: ReaderT (StreamDeckState s) m a}
+newtype StreamDeckT m s a = StreamDeck {unStreamDeck :: ReaderT (StreamDeckState s) m a}
     deriving newtype
         ( Functor
         , Applicative
@@ -213,10 +231,10 @@ instance (MonadIO m) => MonadBase IO (StreamDeckT m s) where
 
 runStreamDeck
     :: forall s m a
-     . (IsDevice s, MonadUnliftIO m)
+     . (MonadUnliftIO m, IsStreamDeck s)
     => StreamDeckT m s a
     -> m [a]
-runStreamDeck f =
+runStreamDeck StreamDeck{..} =
     withDevice @s $ \deviceInfo device -> do
         let state = StreamDeckState{..}
-        runReaderT f._runApp state
+        runReaderT unStreamDeck state

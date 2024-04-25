@@ -2,8 +2,8 @@
 
 module System.Hardware.Devices.StreamDeckPlus where
 
-import Internal.Prelude
 import System.Hardware.StreamDeck
+import Prelude
 
 data StreamDeckPlus
 
@@ -17,3 +17,7 @@ instance IsStreamDeckWithDisplayButtons StreamDeckPlus where
     displayButtonPressEventCode = [0x01, 0x00, 0x08, 0x00]
     buttonImageWidth = 144
     buttonImageHeight = 144
+
+instance IsStreamDeckWithKnobs StreamDeckPlus where
+    knobEventCode = [0x01, 0x03, 0x05, 0x00]
+    knobCount = 4

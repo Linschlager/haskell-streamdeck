@@ -1,7 +1,7 @@
 module System.Hardware.Devices.StreamDeckPedal where
 
-import Internal.Prelude
 import System.Hardware.StreamDeck
+import Prelude
 
 data StreamDeckPedal
 
